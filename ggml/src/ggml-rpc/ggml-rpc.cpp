@@ -402,7 +402,9 @@ static bool negotiate_hello(const std::shared_ptr<socket_t> & sock) {
     sock->get_caps(request.conn_caps);
 
     bool status = send_rpc_cmd(sock, RPC_CMD_HELLO, &request, sizeof(request), &response, sizeof(response));
-    RPC_STATUS_ASSERT(status);
+    if (!status) {
+        return false;
+    }
 
     if (response.major != RPC_PROTO_MAJOR_VERSION || response.minor > RPC_PROTO_MINOR_VERSION) {
         GGML_LOG_ERROR("RPC server version mismatch: %d.%d.%d\n",
@@ -483,7 +485,7 @@ public:
     void busy_spin_release();
     void graph_compute(uint32_t device, const ggml_cgraph * cgraph);
 
-    void start(const std::string & endpoint);
+    bool start(const std::string & endpoint);
     void work();
 
     ~rpc_dispatcher();
@@ -608,26 +610,31 @@ void rpc_dispatcher::busy_spin_release() {
     GGML_ASSERT(previous > 0);
 }
 
-void rpc_dispatcher::start(const std::string & endpoint) {
+bool rpc_dispatcher::start(const std::string & endpoint) {
     std::string host;
     int port;
     if (!parse_endpoint(endpoint, host, port)) {
-        GGML_ABORT("Failed to parse endpoint: %s\n", endpoint.c_str());
+        GGML_LOG_ERROR("Failed to parse endpoint: %s\n", endpoint.c_str());
+        return false;
     }
     if (!rpc_transport_init()) {
-        GGML_ABORT("RPC transport initialization failed\n");
+        GGML_LOG_ERROR("RPC transport initialization failed\n");
+        return false;
     }
 
     sock = socket_t::connect(host.c_str(), port);
     if (sock == nullptr) {
-        GGML_ABORT("Failed to connect to %s\n", endpoint.c_str());
+        GGML_LOG_ERROR("Failed to connect to %s\n", endpoint.c_str());
+        return false;
     }
     if (!negotiate_hello(sock)) {
-        GGML_ABORT("RPC handshake failed for %s\n", endpoint.c_str());
+        GGML_LOG_ERROR("RPC handshake failed for %s\n", endpoint.c_str());
+        return false;
     }
     LOG_DBG("[%s] connected to %s\n", __func__, endpoint.c_str());
     running = true;
     thread = std::thread(rpc_dispatcher_trampoline, this);
+    return true;
 }
 
 void rpc_dispatcher::work() {
@@ -668,7 +675,8 @@ rpc_dispatcher::~rpc_dispatcher() {
     }
 }
 
-static std::shared_ptr<rpc_dispatcher> get_dispatcher(const std::string & endpoint) {
+// returns nullptr if the server cannot be reached or the handshake fails
+static std::shared_ptr<rpc_dispatcher> try_get_dispatcher(const std::string & endpoint) {
     static std::mutex mutex;
     std::lock_guard<std::mutex> lock(mutex);
     static std::unordered_map<std::string, std::weak_ptr<rpc_dispatcher>> dispatchers;
@@ -681,8 +689,18 @@ static std::shared_ptr<rpc_dispatcher> get_dispatcher(const std::string & endpoi
     }
 
     auto dispatcher = std::make_shared<rpc_dispatcher>();
-    dispatcher->start(endpoint);
+    if (!dispatcher->start(endpoint)) {
+        return nullptr;
+    }
     dispatchers[endpoint] = dispatcher;
+    return dispatcher;
+}
+
+static std::shared_ptr<rpc_dispatcher> get_dispatcher(const std::string & endpoint) {
+    auto dispatcher = try_get_dispatcher(endpoint);
+    if (dispatcher == nullptr) {
+        GGML_ABORT("Failed to connect to %s\n", endpoint.c_str());
+    }
     return dispatcher;
 }
 
@@ -3027,7 +3045,10 @@ ggml_backend_reg_t ggml_backend_rpc_reg(void) {
 }
 
 static uint32_t ggml_backend_rpc_get_device_count(const char * endpoint) {
-    auto dispatcher = get_dispatcher(endpoint);
+    auto dispatcher = try_get_dispatcher(endpoint);
+    if (dispatcher == nullptr) {
+        return 0;
+    }
     rpc_msg_device_count_rsp response;
     dispatcher->send(RPC_CMD_DEVICE_COUNT, nullptr, 0, &response, sizeof(response));
     return response.device_count;

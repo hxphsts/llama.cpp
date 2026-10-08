@@ -5,11 +5,15 @@
 #include "ggml.h"
 
 int main(int argc, char ** argv) {
-    GGML_ASSERT(argc == 3);
+    GGML_ASSERT(argc == 4);
     ggml_backend_load_all();
 
-    const char * endpoint_a = argv[1];
-    const char * endpoint_b = argv[2];
+    const char * endpoint_a    = argv[1];
+    const char * endpoint_b    = argv[2];
+    const char * endpoint_down = argv[3];
+
+    // a server nobody listens on has no devices, the client does not abort
+    GGML_ASSERT(ggml_backend_rpc_add_server(endpoint_down) == nullptr);
 
     ggml_backend_t backend_a = ggml_backend_rpc_init(endpoint_a, 0);
     ggml_backend_t backend_b = ggml_backend_rpc_init(endpoint_b, 0);

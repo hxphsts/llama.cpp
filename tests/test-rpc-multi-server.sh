@@ -7,6 +7,7 @@ port_a=$((40000 + $$ % 10000))
 port_b=$((port_a + 1))
 endpoint_a="127.0.0.1:${port_a}"
 endpoint_b="127.0.0.1:${port_b}"
+endpoint_down="127.0.0.1:$((port_b + 1))"
 test_dir=$(mktemp -d)
 
 cleanup() {
@@ -35,7 +36,7 @@ pid_b=$!
 wait_for_port "$port_a"
 wait_for_port "$port_b"
 
-"$client" "$endpoint_a" "$endpoint_b"
+"$client" "$endpoint_a" "$endpoint_b" "$endpoint_down"
 
 if grep -q "invalid data ptr" "$test_dir/server-b.log"; then
     cat "$test_dir/server-b.log"
